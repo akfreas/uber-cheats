@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import asyncio
 import json
 import os
 import platform
@@ -13,9 +14,9 @@ import traceback
 from datetime import datetime
 from typing import Dict, List
 
+import aiohttp
 import openai
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -72,6 +73,7 @@ class UberEatsDeals:
         self.setup_database()
         self.deals = []
         openai.api_key = OPENAI_API_KEY
+        self.db_lock = asyncio.Lock()  # Add lock for database operations
 
     def get_chrome_version(self):
         """Get the installed Chrome version."""
@@ -150,9 +152,8 @@ class UberEatsDeals:
         except TimeoutException:
             return None
 
-    def extract_deals_with_llm(self, html_content: str) -> List[Dict]:
+    async def extract_deals_with_llm(self, html_content: str) -> List[Dict]:
         """Use OpenAI to extract deals from HTML content."""
-        # Parse HTML with BeautifulSoup for debugging
         try:
             # Create debug directory if it doesn't exist
             debug_dir = "debug_output"
@@ -167,24 +168,21 @@ class UberEatsDeals:
             
             # Find all promo tags first
             promo_tags = soup.find_all('img', src=lambda x: x and 'promo-tag-3x.png' in x)
-            # import ipdb; ipdb.set_trace()
             if not promo_tags:
                 print("No promotion tags found in the HTML")
                 return []
             
-            # For each promo tag, get the parent containers (3 levels up)
+            # For each promo tag, get the parent containers
             menu_items = []
             for tag in promo_tags:
-                # Navigate up to find the menu item container
                 current = tag
-                for _ in range(9):  # Go up 4 levels to get the full item context
+                for _ in range(9):
                     if current.parent:
                         current = current.parent
                     else:
                         break
                 
                 if current:
-                    # Get the item container HTML
                     item_html = str(current)
                     menu_items.append(item_html)
             
@@ -196,53 +194,55 @@ class UberEatsDeals:
             with open(os.path.join(debug_dir, "extracted_menu_items.html"), "w", encoding='utf-8') as f:
                 f.write("\n---MENU ITEM SEPARATOR---\n".join(menu_items))
             
-            # Process each menu item individually
+            # Process menu items concurrently
             all_deals = []
-            client = openai.OpenAI(
-                api_key=OPENAI_API_KEY
-            )
+            client = openai.OpenAI(api_key=OPENAI_API_KEY)
             
-            for i, item in enumerate(menu_items):
-                print(f"Processing menu item {i+1} of {len(menu_items)}...")
-                
-                # Save individual item for debugging
-                with open(os.path.join(debug_dir, f"menu_item_{i}.html"), "w", encoding='utf-8') as f:
-                    f.write(item)
-                
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a specialized HTML parser focused on extracting deal information from Uber Eats pages."},
-                        {"role": "user", "content": DEAL_EXTRACTION_PROMPT + item}
-                    ],
-                    temperature=0.1,
-                    max_tokens=1000
-                )
-                
-                # Save the raw response
-                with open(os.path.join(debug_dir, f"response_{i}.json"), "w", encoding='utf-8') as f:
-                    f.write(str(response))
-                
+            async def process_menu_item(item, index):
                 try:
+                    # Save individual item for debugging
+                    with open(os.path.join(debug_dir, f"menu_item_{index}.html"), "w", encoding='utf-8') as f:
+                        f.write(item)
+                    
+                    response = await asyncio.to_thread(
+                        client.chat.completions.create,
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You are a specialized HTML parser focused on extracting deal information from Uber Eats pages."},
+                            {"role": "user", "content": DEAL_EXTRACTION_PROMPT + item}
+                        ],
+                        temperature=0.1,
+                        max_tokens=1000
+                    )
+                    
+                    # Save the raw response
+                    with open(os.path.join(debug_dir, f"response_{index}.json"), "w", encoding='utf-8') as f:
+                        f.write(str(response))
+                    
                     content = response.choices[0].message.content
                     # Save the content separately
-                    with open(os.path.join(debug_dir, f"content_{i}.json"), "w", encoding='utf-8') as f:
+                    with open(os.path.join(debug_dir, f"content_{index}.json"), "w", encoding='utf-8') as f:
                         f.write(content)
                     
-                    # Clean up the content - remove markdown formatting if present
                     if '```json' in content:
                         content = content.split('```json')[1].split('```')[0]
                     
                     result = json.loads(content.strip())
                     if result.get('deals'):
-                        all_deals.extend(result['deals'])
-                        print(f"Found {len(result['deals'])} deals in menu item {i+1}")
-                except json.JSONDecodeError as e:
-                    print(f"Warning: Could not parse LLM response as JSON for menu item {i+1}")
-                    print(f"Error details: {str(e)}")
-                    print("Response content:")
-                    print(content[:500] + "..." if len(content) > 500 else content)
-                    continue
+                        print(f"Found {len(result['deals'])} deals in menu item {index+1}")
+                        return result['deals']
+                    return []
+                except Exception as e:
+                    print(f"Error processing menu item {index+1}: {str(e)}")
+                    return []
+            
+            # Process all menu items concurrently
+            tasks = [process_menu_item(item, i) for i, item in enumerate(menu_items)]
+            results = await asyncio.gather(*tasks)
+            
+            # Combine all results
+            for deals in results:
+                all_deals.extend(deals)
             
             # Save final results
             with open(os.path.join(debug_dir, "final_deals.json"), "w", encoding='utf-8') as f:
@@ -255,26 +255,23 @@ class UberEatsDeals:
             traceback.print_exc()
             return []
 
-    def extract_deal_details(self, card_link):
+    async def extract_deal_details(self, card_link):
         """Extract specific deal information from a restaurant page."""
         deals = []
         try:
-            # Add headers to mimic a browser request
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
             }
             
-            # Make GET request to the page
-            response = requests.get(card_link, headers=headers)
-            response.raise_for_status()
-            
-            # Get the page content
-            page_content = response.text
-            
-            # Use LLM to extract deals
-            deals = self.extract_deals_with_llm(page_content)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(card_link, headers=headers) as response:
+                    if response.status == 200:
+                        page_content = await response.text()
+                        deals = await self.extract_deals_with_llm(page_content)
+                    else:
+                        print(f"Error: HTTP {response.status} when fetching {card_link}")
             
         except Exception as e:
             print(f"Error extracting deal details: {str(e)}")
@@ -284,16 +281,18 @@ class UberEatsDeals:
     def setup_database(self):
         """Initialize SQLite database and create tables if they don't exist."""
         self.db_path = "uber_deals.db"
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        
+        # Create the initial connection and schema
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
         
         # Configure SQLite for immediate disk writes
-        self.cursor = self.conn.cursor()
-        self.cursor.execute('PRAGMA journal_mode=DELETE')  # Use delete mode instead of WAL
-        self.cursor.execute('PRAGMA synchronous=FULL')     # Ensure writes are synced to disk
-        self.cursor.execute('PRAGMA cache_size=0')         # Disable caching
+        cursor.execute('PRAGMA journal_mode=DELETE')  # Use delete mode instead of WAL
+        cursor.execute('PRAGMA synchronous=FULL')     # Ensure writes are synced to disk
+        cursor.execute('PRAGMA cache_size=0')         # Disable caching
         
         # Drop existing table if it exists (to handle schema changes)
-        self.cursor.execute('DROP TABLE IF EXISTS deals')
+        cursor.execute('DROP TABLE IF EXISTS deals')
         
         # Define schema mapping
         self.schema_mapping = {
@@ -310,7 +309,7 @@ class UberEatsDeals:
         }
         
         # Create deals table with consistent column names and proper price type
-        self.cursor.execute('''
+        cursor.execute('''
             CREATE TABLE deals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 restaurant TEXT,
@@ -326,8 +325,9 @@ class UberEatsDeals:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        self.conn.commit()
-    
+        conn.commit()
+        conn.close()
+
     def validate_deal_info(self, deal_info: Dict) -> Dict:
         """Validate and clean deal info according to schema."""
         validated_data = {}
@@ -348,30 +348,37 @@ class UberEatsDeals:
         
         return validated_data
     
-    def save_deal_to_db(self, deal_info: Dict):
+    async def save_deal_to_db(self, deal_info: Dict):
         """Save a deal to the SQLite database."""
         try:
             # Validate and clean the deal info
             validated_data = self.validate_deal_info(deal_info)
-            
-            # Convert datetime to ISO format string
             validated_data['timestamp'] = datetime.now().isoformat()
             
             # Prepare column names and placeholders for SQL query
             columns = ', '.join(validated_data.keys())
             placeholders = ', '.join(['?' for _ in validated_data])
-            
-            # Construct and execute INSERT query
             query = f'INSERT INTO deals ({columns}) VALUES ({placeholders})'
-            self.cursor.execute(query, list(validated_data.values()))
-            self.conn.commit()
+            values = list(validated_data.values())
+            
+            # Use lock to ensure thread-safe database access
+            async with self.db_lock:
+                # Create a new connection for this operation
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(query, values)
+                    conn.commit()
+                finally:
+                    cursor.close()
+                    conn.close()
             
         except Exception as e:
             print(f"Error saving deal to database: {str(e)}")
             print(f"Original deal info: {json.dumps(deal_info, indent=2)}")
             print(f"Validated data: {json.dumps(validated_data, indent=2)}")
 
-    def get_restaurant_deals(self, url):
+    async def get_restaurant_deals(self, url):
         """Extract deals from the offer page."""
         try:
             print("Loading page...")
@@ -391,7 +398,6 @@ class UberEatsDeals:
                     break
                 last_height = new_height
             
-            # Find all store cards using data-testid attribute
             store_cards = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="store-card"]')
             print(f"Found {len(store_cards)} store cards")
             
@@ -407,20 +413,18 @@ class UberEatsDeals:
                     f.write(store_cards[0].get_attribute('outerHTML'))
                 print("Saved first card HTML to first_card.html")
             
-            for card in store_cards:
+            # Process store cards concurrently
+            async def process_store_card(card):
                 try:
-                    # Get restaurant name - try multiple approaches
+                    # Get restaurant name
                     name = None
                     try:
-                        # Try h3 within the card first
                         name = card.find_element(By.TAG_NAME, 'h3').text.strip()
                     except NoSuchElementException:
                         try:
-                            # Try finding the link text within the card
                             name = card.find_element(By.CSS_SELECTOR, 'a').get_attribute('aria-label')
                         except NoSuchElementException:
                             try:
-                                # Try finding any div with the restaurant name pattern
                                 name_divs = card.find_elements(By.XPATH, 
                                     ".//div[contains(@class, 'bo') and contains(@class, 'na')]")
                                 if name_divs:
@@ -429,26 +433,22 @@ class UberEatsDeals:
                                 pass
                     
                     if not name:
-                        print("Could not find restaurant name, skipping card")
-                        continue
+                        return []
                     
                     # Get the restaurant link
                     try:
-                        # Look for the link in the a tag with data-testid="store-card"
                         link = card.get_attribute('href')
                         if not link:
                             raise NoSuchElementException("Link is empty")
                     except NoSuchElementException:
                         print(f"Could not find link for {name}, skipping")
-                        continue
+                        return []
 
-                    # Modify the link to include quickView parameter for better deal visibility
                     if '?' in link:
                         link = link + '&mod=quickView'
                     else:
                         link = link + '?mod=quickView'
                     
-                    # Extract basic info
                     basic_info = {
                         'Restaurant': name,
                         'Delivery Fee': "Not specified",
@@ -456,7 +456,7 @@ class UberEatsDeals:
                         'Delivery Time': "Not specified"
                     }
                     
-                    # Get promotion from the card first
+                    # Get promotion from the card
                     try:
                         promo_tag = card.find_element(
                             By.XPATH,
@@ -493,25 +493,35 @@ class UberEatsDeals:
                     except NoSuchElementException:
                         pass
                     
-                    # Get specific deals
                     print(f"Extracting deals from {name}...")
-                    specific_deals = self.extract_deal_details(link)
+                    specific_deals = await self.extract_deal_details(link)
                     
                     # Add each deal as a separate entry
+                    deals = []
                     for deal in specific_deals:
                         deal_info = basic_info.copy()
                         deal_info.update(deal)
-                        deal_info['url'] = link  # Add the URL to the deal info
-                        self.deals.append(deal_info)
-                        self.save_deal_to_db(deal_info)  # Save to database
+                        deal_info['url'] = link
+                        deals.append(deal_info)
+                        await self.save_deal_to_db(deal_info)  # Use the async version
                         print(f"Added deal: {deal.get('name', 'Unknown')} from {name}")
                     
                     if not specific_deals:
                         print(f"No specific deals found for {name}")
                     
+                    return deals
+                    
                 except Exception as e:
                     print(f"Error processing card: {str(e)}")
-                    continue
+                    return []
+            
+            # Process all store cards concurrently
+            tasks = [process_store_card(card) for card in store_cards]
+            results = await asyncio.gather(*tasks)
+            
+            # Combine all results
+            for deals in results:
+                self.deals.extend(deals)
             
             if not self.deals:
                 print("No deals could be extracted. Check debug_page.html for content.")
@@ -536,8 +546,6 @@ class UberEatsDeals:
         """Clean up resources."""
         if hasattr(self, 'driver'):
             self.driver.quit()
-        if hasattr(self, 'conn'):
-            self.conn.close()
 
 def view_stored_deals():
     """View all deals stored in the database."""
@@ -667,7 +675,7 @@ def analyze_stored_deals():
         print(f"Error analyzing deals: {str(e)}")
         traceback.print_exc()
 
-def main():
+async def main_async():
     parser = argparse.ArgumentParser(description='Find the best deals on Uber Eats')
     parser.add_argument('--offer_url', help='URL of the Uber Eats offer page')
     parser.add_argument('--view', action='store_true', help='View stored deals from the database')
@@ -692,10 +700,13 @@ def main():
     
     deals_finder = UberEatsDeals()
     try:
-        deals_finder.get_restaurant_deals(args.offer_url)
+        await deals_finder.get_restaurant_deals(args.offer_url)
         deals_finder.display_results()
     finally:
         deals_finder.cleanup()
+
+def main():
+    asyncio.run(main_async())
 
 if __name__ == "__main__":
     main() 
