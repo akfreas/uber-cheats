@@ -1,13 +1,18 @@
 #!/bin/bash
 
+# Activate virtual environment if not already activated
+if [[ -z "${VIRTUAL_ENV}" ]]; then
+    source /app/venv/bin/activate
+fi
+
 # Start the backend server
 cd backend
-python3 main.py &
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
-# Start the frontend server
-cd ../frontend
-npm start &
+# Serve the frontend using a simple HTTP server
+cd ../frontend/build
+python3 -m http.server 3000 &
 FRONTEND_PID=$!
 
 # Function to kill both servers
@@ -18,8 +23,11 @@ cleanup() {
     exit 0
 }
 
-# Set up trap to catch Ctrl+C
-trap cleanup INT
+# Set up trap to catch Ctrl+C and SIGTERM
+trap cleanup INT TERM
+
+echo "Backend server running on http://0.0.0.0:8000"
+echo "Frontend server running on http://0.0.0.0:3000"
 
 # Wait for either process to exit
 wait $BACKEND_PID $FRONTEND_PID 

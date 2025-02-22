@@ -110,32 +110,38 @@ class UberEatsDeals:
             if os.path.exists(wdm_path):
                 shutil.rmtree(wdm_path)
             
-            # Check for Chrome binary in common Linux locations
-            chrome_locations = [
-                "/usr/bin/google-chrome",
-                "/usr/bin/google-chrome-stable",
-                "/usr/bin/chromium",
-                "/usr/bin/chromium-browser",
-                "/snap/bin/chromium",
-            ]
-            
-            # For macOS
-            if platform.system() == "Darwin" and os.path.exists("/Applications/Google Chrome.app"):
-                chrome_options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-            # For Linux
+            # Get Chrome binary path from environment or use default locations
+            chrome_path = os.getenv('CHROME_PATH')
+            if chrome_path and os.path.exists(chrome_path):
+                chrome_options.binary_location = chrome_path
+                print(f"Using Chrome binary from environment: {chrome_path}")
             else:
-                chrome_found = False
-                for location in chrome_locations:
-                    if os.path.exists(location):
-                        chrome_options.binary_location = location
-                        chrome_found = True
-                        print(f"Found Chrome at: {location}")
-                        break
+                # Check common locations for Chrome/Chromium
+                chrome_locations = [
+                    "/usr/bin/google-chrome",
+                    "/usr/bin/google-chrome-stable",
+                    "/usr/bin/chromium",
+                    "/usr/bin/chromium-browser",
+                    "/snap/bin/chromium",
+                ]
                 
-                if not chrome_found:
-                    print("Warning: Could not find Chrome binary in standard locations")
-                    print("Available system binaries:")
-                    os.system("which google-chrome google-chrome-stable chromium chromium-browser 2>/dev/null")
+                # For macOS
+                if platform.system() == "Darwin" and os.path.exists("/Applications/Google Chrome.app"):
+                    chrome_options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                # For Linux
+                else:
+                    chrome_found = False
+                    for location in chrome_locations:
+                        if os.path.exists(location):
+                            chrome_options.binary_location = location
+                            chrome_found = True
+                            print(f"Found Chrome/Chromium at: {location}")
+                            break
+                    
+                    if not chrome_found:
+                        print("Warning: Could not find Chrome/Chromium binary in standard locations")
+                        print("Available system binaries:")
+                        os.system("which google-chrome google-chrome-stable chromium chromium-browser 2>/dev/null")
             
             # Install and setup ChromeDriver
             print("Installing ChromeDriver...")
