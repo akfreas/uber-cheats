@@ -15,6 +15,7 @@ from typing import Dict, List
 
 import openai
 import pandas as pd
+import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -38,7 +39,7 @@ Focus on items that have promotions like "Buy 1, Get 1 Free" or "Top Offer".
 
 For each deal found, provide:
 1. Item name
-2. Price (in €)
+2. Price as a float number (remove the € symbol and convert to float, e.g., "12,99 €" should become 12.99)
 3. Description (if available)
 4. Promotion type (e.g., "Buy 1, Get 1 Free")
 
@@ -47,12 +48,19 @@ Return the information in this JSON format:
     "deals": [
         {
             "name": "Item name",
-            "price": "Price in €",
+            "price": 12.99,
             "description": "Item description",
             "promotion": "Promotion type"
         }
     ]
 }
+
+Important formatting rules:
+- Price must be a float number, not a string
+- Convert comma-separated prices to dot-separated (e.g., "12,99" → 12.99)
+- Remove any currency symbols (€, EUR, etc.)
+- If a price range is given (e.g., "12,99 € - 15,99 €"), use the lower price
+- If no price is found, use 0.0
 
 If no deals are found, return an empty deals array.
 HTML:
@@ -144,6 +152,7 @@ class UberEatsDeals:
 
     def extract_deals_with_llm(self, html_content: str) -> List[Dict]:
         """Use OpenAI to extract deals from HTML content."""
+        # Parse HTML with BeautifulSoup for debugging
         try:
             # Create debug directory if it doesn't exist
             debug_dir = "debug_output"
@@ -249,37 +258,26 @@ class UberEatsDeals:
     def extract_deal_details(self, card_link):
         """Extract specific deal information from a restaurant page."""
         deals = []
-        main_window = None
         try:
-            # Store the main window handle
-            main_window = self.driver.current_window_handle
+            # Add headers to mimic a browser request
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+            }
             
-            # Open link in new tab
-            self.driver.execute_script("window.open(arguments[0], '_blank');", card_link)
-            
-            # Switch to the new tab
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-            
-            # Wait for content to load
-            time.sleep(5)
+            # Make GET request to the page
+            response = requests.get(card_link, headers=headers)
+            response.raise_for_status()
             
             # Get the page content
-            page_content = self.driver.page_source
+            page_content = response.text
             
             # Use LLM to extract deals
             deals = self.extract_deals_with_llm(page_content)
             
         except Exception as e:
             print(f"Error extracting deal details: {str(e)}")
-        finally:
-            # Make sure we always clean up
-            try:
-                if len(self.driver.window_handles) > 1:
-                    self.driver.close()
-                if main_window:
-                    self.driver.switch_to.window(main_window)
-            except Exception as e:
-                print(f"Error during cleanup: {str(e)}")
         
         return deals
 
@@ -305,13 +303,13 @@ class UberEatsDeals:
             'delivery_time': 'Delivery Time',
             'card_promotion': 'Card Promotion',
             'item_name': 'name',
-            'price': 'price',
+            'price': 'price',  # This will now be a float
             'description': 'description',
             'promotion_type': 'promotion',
             'url': 'url'
         }
         
-        # Create deals table with consistent column names
+        # Create deals table with consistent column names and proper price type
         self.cursor.execute('''
             CREATE TABLE deals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -321,7 +319,7 @@ class UberEatsDeals:
                 delivery_time TEXT,
                 card_promotion TEXT,
                 item_name TEXT,
-                price TEXT,
+                price REAL,
                 description TEXT,
                 promotion_type TEXT,
                 url TEXT,
@@ -336,7 +334,17 @@ class UberEatsDeals:
         
         # Map input fields to database columns using schema mapping
         for db_column, input_field in self.schema_mapping.items():
-            validated_data[db_column] = deal_info.get(input_field, '')
+            value = deal_info.get(input_field, '')
+            
+            # Handle price specifically
+            if db_column == 'price':
+                # If price is missing or invalid, default to 0.0
+                try:
+                    validated_data[db_column] = float(value) if value else 0.0
+                except (ValueError, TypeError):
+                    validated_data[db_column] = 0.0
+            else:
+                validated_data[db_column] = value
         
         return validated_data
     
@@ -346,8 +354,8 @@ class UberEatsDeals:
             # Validate and clean the deal info
             validated_data = self.validate_deal_info(deal_info)
             
-            # Add timestamp
-            validated_data['timestamp'] = datetime.now()
+            # Convert datetime to ISO format string
+            validated_data['timestamp'] = datetime.now().isoformat()
             
             # Prepare column names and placeholders for SQL query
             columns = ', '.join(validated_data.keys())
@@ -427,7 +435,7 @@ class UberEatsDeals:
                     # Get the restaurant link
                     try:
                         # Look for the link in the a tag with data-testid="store-card"
-                        link = card.find_element(By.CSS_SELECTOR, 'a[data-testid="store-card"]').get_attribute('href')
+                        link = card.get_attribute('href')
                         if not link:
                             raise NoSuchElementException("Link is empty")
                     except NoSuchElementException:
