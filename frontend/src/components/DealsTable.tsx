@@ -26,6 +26,7 @@ import {
   useReactTable
 } from '@tanstack/react-table';
 import React, { useEffect, useMemo, useState } from 'react';
+import config from '../config';
 
 interface Deal {
   restaurant: string;
@@ -50,7 +51,7 @@ const DealsTable: React.FC = () => {
   useEffect(() => {
     const fetchDeals = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/deals');
+        const response = await fetch(config.endpoints.deals);
         if (!response.ok) {
           throw new Error('Failed to fetch deals');
         }

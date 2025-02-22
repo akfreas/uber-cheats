@@ -1,13 +1,17 @@
 # Use Node.js as base image for frontend build
-FROM --platform=$BUILDPLATFORM node:18 as frontend-build
+FROM node:18-slim as frontend-build
 
 # Set working directory
 WORKDIR /app/frontend
 
+# Add build argument for API URL
+ARG REACT_APP_API_URL=https://ubercheats.freas.me
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+
 # Copy frontend package files
 COPY frontend/package*.json ./
 
-# Install frontend dependencies
+# Install frontend dependencies using npm
 RUN npm install
 
 # Copy frontend source
@@ -17,12 +21,12 @@ COPY frontend/ ./
 RUN npm run build
 
 # Use Ubuntu as base image for final image
-FROM --platform=$TARGETPLATFORM ubuntu:22.04
+FROM ubuntu:22.04
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python and system dependencies
+# Install necessary packages (including jq for JSON parsing)
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -33,23 +37,56 @@ RUN apt-get update && apt-get install -y \
     unzip \
     fonts-liberation \
     xvfb \
-    software-properties-common \
-    nodejs \
-    npm \
+    dbus-x11 \
+    xfonts-100dpi \
+    xfonts-75dpi \
+    xfonts-cyrillic \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chrome based on architecture
-RUN if [ "$(uname -m)" = "x86_64" ]; then \
-        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-        && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-        && apt-get update \
-        && apt-get install -y google-chrome-stable; \
-    elif [ "$(uname -m)" = "aarch64" ]; then \
-        apt-get update \
-        && apt-get install -y chromium-browser; \
-    fi \
-    && rm -rf /var/lib/apt/lists/*
-
+# Install Chrome and ChromeDriver
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | \
+      gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    \
+    # Extract Chrome version and major version
+    GOOGLE_CHROME_VERSION=$(google-chrome --version | awk '{print $3}') && \
+    GOOGLE_CHROME_MAJOR_VERSION=$(echo $GOOGLE_CHROME_VERSION | cut -d '.' -f 1) && \
+    echo "Installed Chrome version: $GOOGLE_CHROME_VERSION" && \
+    echo "Chrome major version: $GOOGLE_CHROME_MAJOR_VERSION" && \
+    \
+    # Depending on the major version, fetch the correct ChromeDriver:
+    if [ "$GOOGLE_CHROME_MAJOR_VERSION" -ge 115 ]; then \
+       echo "Using new endpoint for ChromeDriver (Chrome $GOOGLE_CHROME_MAJOR_VERSION)"; \
+       echo "Fetching JSON from new endpoint:"; \
+       curl -sS "https://googlechromelabs.github.io/chrome-for-testing/latest-versions-per-milestone.json" | tee /tmp/latest-versions.json; \
+       echo "JSON content:"; cat /tmp/latest-versions.json; \
+       echo "Querying for major version $GOOGLE_CHROME_MAJOR_VERSION"; \
+       CHROMEDRIVER_VERSION=$(cat /tmp/latest-versions.json | jq -r --arg M "$GOOGLE_CHROME_MAJOR_VERSION" '.milestones[$M].version'); \
+       echo "Extracted ChromeDriver version from new endpoint: ${CHROMEDRIVER_VERSION}"; \
+       if [ -z "$CHROMEDRIVER_VERSION" ] || [ "$CHROMEDRIVER_VERSION" = "null" ]; then \
+           echo "New endpoint did not return a valid version; falling back to legacy endpoint"; \
+           CHROMEDRIVER_VERSION=$(curl -sS "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${GOOGLE_CHROME_MAJOR_VERSION}"); \
+           echo "Legacy ChromeDriver version: ${CHROMEDRIVER_VERSION}"; \
+       fi; \
+       echo "Final ChromeDriver version to install: ${CHROMEDRIVER_VERSION}"; \
+       FINAL_URL="https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROMEDRIVER_VERSION}/linux64/chromedriver-linux64.zip" && \
+       echo "Downloading ChromeDriver from: ${FINAL_URL}" && \
+       wget -q -O chromedriver_linux64.zip "${FINAL_URL}"; \
+    else \
+       echo "Using legacy endpoint for ChromeDriver (Chrome $GOOGLE_CHROME_MAJOR_VERSION)"; \
+       CHROMEDRIVER_VERSION=$(curl -sS "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${GOOGLE_CHROME_MAJOR_VERSION}"); \
+       echo "Installing ChromeDriver version: ${CHROMEDRIVER_VERSION}"; \
+       wget -q -O chromedriver_linux64.zip "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"; \
+    fi && \
+    \
+    unzip -j chromedriver_linux64.zip -d /usr/local/bin && \
+    rm chromedriver_linux64.zip && \
+    chmod +x /usr/local/bin/chromedriver && \
+    rm -rf /var/lib/apt/lists/* && \
+    google-chrome --version
 # Set working directory
 WORKDIR /app
 
@@ -74,41 +111,38 @@ COPY --from=frontend-build /app/frontend/build /app/frontend/build
 COPY start.sh .
 RUN chmod +x start.sh
 
-# Create directory for Chrome data and set permissions
+# Set up Chrome directories and permissions
 RUN mkdir -p /app/.chrome-data && \
-    chmod -R 777 /app/.chrome-data
-
-# Set up X11 directories with correct permissions
-RUN mkdir -p /tmp/.X11-unix && \
-    chmod 1777 /tmp/.X11-unix
+    mkdir -p /tmp/.X11-unix && \
+    chmod 1777 /tmp/.X11-unix && \
+    chown root:root /tmp/.X11-unix && \
+    # Ensure Chrome directories are properly set up
+    mkdir -p /var/lib/chrome && \
+    mkdir -p /var/lib/chrome/chrome && \
+    chmod -R 777 /var/lib/chrome
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV NODE_ENV=production
 ENV CHROME_DATA_DIR=/app/.chrome-data
 ENV DISPLAY=:99
+ENV CHROME_PATH=/usr/bin/google-chrome
+ENV CHROME_DRIVER_PATH=/usr/local/bin/chromedriver
 
-# Set Chrome binary path based on architecture
-RUN if [ "$(uname -m)" = "x86_64" ]; then \
-        echo "export CHROME_PATH=/usr/bin/google-chrome" >> /app/venv/bin/activate; \
-    elif [ "$(uname -m)" = "aarch64" ]; then \
-        echo "export CHROME_PATH=/usr/bin/chromium-browser" >> /app/venv/bin/activate; \
-    fi
-
-# Create a non-root user to run Chrome
+# Create a non-root user and set up permissions
 RUN useradd -m -d /home/chrome chrome && \
-    chown -R chrome:chrome /app /app/venv && \
-    chown chrome:chrome /tmp/.X11-unix
+    # Give chrome user access to necessary directories
+    chown -R chrome:chrome /app /app/venv /app/.chrome-data /var/lib/chrome && \
+    # Set up chromedriver permissions
+    chown root:chrome /usr/local/bin/chromedriver && \
+    chmod 755 /usr/local/bin/chromedriver && \
+    # Set up chrome permissions
+    chown root:chrome /usr/bin/google-chrome && \
+    chmod 755 /usr/bin/google-chrome
 
-# Create Xvfb startup script
-RUN echo '#!/bin/bash\n\
-mkdir -p /tmp/.X11-unix\n\
-chmod 1777 /tmp/.X11-unix\n\
-Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\n\
-sleep 1\n\
-source /app/venv/bin/activate\n\
-exec "$@"' > /app/entrypoint.sh \
-    && chmod +x /app/entrypoint.sh
+# Create simple entrypoint script with Xvfb
+RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\nsleep 1\nexec "$@"' > /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
 
 # Switch to non-root user
 USER chrome
@@ -118,4 +152,4 @@ EXPOSE 3000 8000
 
 # Start the application with Xvfb
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["./start.sh"] 
+CMD ["./start.sh"]

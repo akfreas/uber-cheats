@@ -105,50 +105,21 @@ class UberEatsDeals:
         chrome_options.add_argument("--remote-debugging-port=9222")
         
         try:
-            # Clean up any existing ChromeDriver installations
-            wdm_path = os.path.expanduser("~/.wdm")
-            if os.path.exists(wdm_path):
-                shutil.rmtree(wdm_path)
+            # Get Chrome binary path from environment
+            chrome_path = os.getenv('CHROME_PATH', '/usr/bin/google-chrome')
+            if not os.path.exists(chrome_path):
+                raise Exception(f"Chrome not found at {chrome_path}")
             
-            # Get Chrome binary path from environment or use default locations
-            chrome_path = os.getenv('CHROME_PATH')
-            if chrome_path and os.path.exists(chrome_path):
-                chrome_options.binary_location = chrome_path
-                print(f"Using Chrome binary from environment: {chrome_path}")
-            else:
-                # Check common locations for Chrome/Chromium
-                chrome_locations = [
-                    "/usr/bin/google-chrome",
-                    "/usr/bin/google-chrome-stable",
-                    "/usr/bin/chromium",
-                    "/usr/bin/chromium-browser",
-                    "/snap/bin/chromium",
-                ]
-                
-                # For macOS
-                if platform.system() == "Darwin" and os.path.exists("/Applications/Google Chrome.app"):
-                    chrome_options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-                # For Linux
-                else:
-                    chrome_found = False
-                    for location in chrome_locations:
-                        if os.path.exists(location):
-                            chrome_options.binary_location = location
-                            chrome_found = True
-                            print(f"Found Chrome/Chromium at: {location}")
-                            break
-                    
-                    if not chrome_found:
-                        print("Warning: Could not find Chrome/Chromium binary in standard locations")
-                        print("Available system binaries:")
-                        os.system("which google-chrome google-chrome-stable chromium chromium-browser 2>/dev/null")
+            chrome_options.binary_location = chrome_path
+            print(f"Using Chrome binary from: {chrome_path}")
             
-            # Install and setup ChromeDriver
-            print("Installing ChromeDriver...")
-            driver_path = ChromeDriverManager().install()
-            print(f"Using ChromeDriver path: {driver_path}")
+            # Use system-installed ChromeDriver
+            chromedriver_path = os.getenv('CHROME_DRIVER_PATH', '/usr/local/bin/chromedriver')
+            if not os.path.exists(chromedriver_path):
+                raise Exception(f"ChromeDriver not found at {chromedriver_path}")
             
-            service = Service(driver_path)
+            print(f"Using ChromeDriver at: {chromedriver_path}")
+            service = Service(chromedriver_path)
             self.driver = webdriver.Chrome(
                 service=service,
                 options=chrome_options
@@ -162,11 +133,10 @@ class UberEatsDeals:
             print(f"Architecture: {platform.machine()}")
             print(f"Python version: {sys.version}")
             print("\nTroubleshooting steps:")
-            print("1. Make sure Google Chrome or Chromium is installed:")
+            print("1. Make sure Chrome is installed:")
             print("   Ubuntu/Debian: sudo apt install google-chrome-stable")
-            print("   Or: sudo apt install chromium-browser")
-            print("2. Try running 'pip install --upgrade webdriver-manager selenium'")
-            print("3. If the error persists, try removing ~/.wdm/ directory manually")
+            print("2. Make sure chromedriver is in the correct location:")
+            print(f"   Expected location: {chromedriver_path}")
             sys.exit(1)
 
     def wait_for_element(self, selector, timeout=10, by=By.CSS_SELECTOR):

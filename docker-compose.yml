@@ -5,9 +5,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=https://ubercheats.freas.me
+    container_name: uber-cheats
     ports:
-      - "3000:3000"  # Frontend
-      - "8000:8000"  # Backend
+      - "3001:3000"
+      - "8001:8000"
     volumes:
       - ./uber_deals.db:/app/uber_deals.db
       - ./.env:/app/.env
@@ -15,8 +18,9 @@ services:
       - NODE_ENV=production
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/deals"]
-      interval: 30s
-      timeout: 10s
-      retries: 3 
+
+volumes:
+  uber-cheats-data:
+    external: true
+  uber-cheats-env:
+    external: true 

@@ -11,6 +11,7 @@ import {
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
+import config from '../config';
 
 const UrlInput: React.FC = () => {
   const [url, setUrl] = useState('');
@@ -32,7 +33,7 @@ const UrlInput: React.FC = () => {
   }, [ws]);
 
   const setupWebSocket = () => {
-    const websocket = new WebSocket(`ws://localhost:8000/ws/${sessionId}`);
+    const websocket = new WebSocket(config.endpoints.websocket(sessionId));
     
     websocket.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -78,7 +79,7 @@ const UrlInput: React.FC = () => {
     }
     
     try {
-      const response = await fetch('http://localhost:8000/api/find-deals', {
+      const response = await fetch(config.endpoints.findDeals, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
