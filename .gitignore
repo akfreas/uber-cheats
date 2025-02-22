@@ -1,4 +1,4 @@
-*.html
+debug_card**.html
 debug_output/
 *.db
 .env
