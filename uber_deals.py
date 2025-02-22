@@ -34,6 +34,23 @@ load_dotenv()  # Load environment variables from .env file
 # OpenAI API key will be set here
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# System-specific configurations
+SYSTEM = platform.system()
+IS_MACOS = SYSTEM == "Darwin"
+IS_LINUX = SYSTEM == "Linux"
+
+# Chrome paths for different systems
+CHROME_PATHS = {
+    "Darwin": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "Linux": "/usr/bin/google-chrome"
+}
+
+# ChromeDriver paths for different systems
+CHROMEDRIVER_PATHS = {
+    "Darwin": "/usr/local/bin/chromedriver",
+    "Linux": "/usr/local/bin/chromedriver"
+}
+
 DEAL_EXTRACTION_PROMPT = """
 Extract deal information from the following HTML snippet of an Uber Eats restaurant page.
 Focus on items that have promotions like "Buy 1, Get 1 Free" or "Top Offer".
@@ -67,24 +84,53 @@ If no deals are found, return an empty deals array.
 HTML:
 """
 
+def get_chrome_path():
+    """Get the Chrome binary path based on the operating system."""
+    chrome_path = CHROME_PATHS.get(SYSTEM)
+    
+    if not chrome_path or not os.path.exists(chrome_path):
+        # For development, try to find Chrome in common locations
+        if IS_MACOS:
+            alternate_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+            ]
+        else:  # Linux
+            alternate_paths = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/chromium"
+            ]
+        
+        for path in alternate_paths:
+            if os.path.exists(path):
+                return path
+        
+        print("Chrome not found in common locations. Please install Chrome or set CHROME_PATH environment variable.")
+        return None
+    
+    return chrome_path
+
 class UberEatsDeals:
     def __init__(self):
-        self.setup_driver()
         self.setup_database()
         self.deals = []
         openai.api_key = OPENAI_API_KEY
         self.db_lock = asyncio.Lock()  # Add lock for database operations
+        self.driver = None
 
     def get_chrome_version(self):
         """Get the installed Chrome version."""
-        if platform.system() == "Darwin":  # macOS
-            try:
-                chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-                version = subprocess.check_output([chrome_path, "--version"], stderr=subprocess.DEVNULL)
-                return version.decode("utf-8").replace("Google Chrome ", "").strip()
-            except:
-                return None
-        return None
+        chrome_path = get_chrome_path()
+        if not chrome_path:
+            return None
+            
+        try:
+            version = subprocess.check_output([chrome_path, "--version"], stderr=subprocess.DEVNULL)
+            return version.decode("utf-8").replace("Google Chrome ", "").strip()
+        except:
+            return None
 
     def setup_driver(self):
         """Set up the Chrome driver with appropriate options."""
@@ -99,44 +145,71 @@ class UberEatsDeals:
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
         
-        # Add Docker/Linux-specific Chrome options
+        # Development-friendly Chrome data directory
         chrome_data_dir = os.getenv('CHROME_DATA_DIR', os.path.expanduser('~/.chrome-data'))
+        os.makedirs(chrome_data_dir, exist_ok=True)
         chrome_options.add_argument(f"--user-data-dir={chrome_data_dir}")
-        chrome_options.add_argument("--remote-debugging-port=9222")
         
         try:
-            # Get Chrome binary path from environment
-            chrome_path = os.getenv('CHROME_PATH', '/usr/bin/google-chrome')
-            if not os.path.exists(chrome_path):
-                raise Exception(f"Chrome not found at {chrome_path}")
+            # Get Chrome binary path
+            chrome_path = get_chrome_path()
+            if not chrome_path:
+                raise Exception("Chrome not found. Please install Chrome browser.")
             
             chrome_options.binary_location = chrome_path
             print(f"Using Chrome binary from: {chrome_path}")
             
-            # Use system-installed ChromeDriver
-            chromedriver_path = os.getenv('CHROME_DRIVER_PATH', '/usr/local/bin/chromedriver')
-            if not os.path.exists(chromedriver_path):
-                raise Exception(f"ChromeDriver not found at {chromedriver_path}")
+            # Use webdriver_manager for automatic ChromeDriver management
+            try:
+                driver = webdriver.Chrome(
+                    service=Service(ChromeDriverManager().install()),
+                    options=chrome_options
+                )
+                print("Chrome driver setup successful using webdriver_manager")
+                self.driver = driver
+                return
+            except Exception as e:
+                print(f"Webdriver manager setup failed, trying system ChromeDriver: {str(e)}")
             
-            print(f"Using ChromeDriver at: {chromedriver_path}")
-            service = Service(chromedriver_path)
-            self.driver = webdriver.Chrome(
-                service=service,
-                options=chrome_options
-            )
-            print("Chrome driver setup successful")
+            # Fallback to system-installed ChromeDriver
+            chromedriver_path = os.getenv('CHROME_DRIVER_PATH', CHROMEDRIVER_PATHS.get(SYSTEM))
+            if chromedriver_path and os.path.exists(chromedriver_path):
+                print(f"Using system ChromeDriver at: {chromedriver_path}")
+                service = Service(chromedriver_path)
+                self.driver = webdriver.Chrome(
+                    service=service,
+                    options=chrome_options
+                )
+                print("Chrome driver setup successful using system ChromeDriver")
+                return
+            
+            raise Exception("No suitable ChromeDriver found")
             
         except Exception as e:
-            print(f"Error setting up Chrome driver: {str(e)}")
+            print(f"\nError setting up Chrome driver: {str(e)}")
             print("\nDetailed error information:")
-            print(f"OS: {platform.system()}")
+            print(f"OS: {SYSTEM}")
             print(f"Architecture: {platform.machine()}")
             print(f"Python version: {sys.version}")
             print("\nTroubleshooting steps:")
-            print("1. Make sure Chrome is installed:")
-            print("   Ubuntu/Debian: sudo apt install google-chrome-stable")
-            print("2. Make sure chromedriver is in the correct location:")
-            print(f"   Expected location: {chromedriver_path}")
+            
+            if IS_MACOS:
+                print("For macOS:")
+                print("1. Install Chrome: Download from https://www.google.com/chrome/")
+                print("2. Install ChromeDriver:")
+                print("   brew install --cask chromedriver")
+                print("   or")
+                print("   brew install chromium-chromedriver")
+            else:
+                print("For Ubuntu/Debian:")
+                print("1. Install Chrome:")
+                print("   sudo apt install google-chrome-stable")
+                print("2. Install ChromeDriver:")
+                print("   sudo apt install chromium-chromedriver")
+            
+            print("\nAlternatively, you can set these environment variables:")
+            print("CHROME_PATH: Path to Chrome binary")
+            print("CHROME_DRIVER_PATH: Path to ChromeDriver binary")
             sys.exit(1)
 
     def wait_for_element(self, selector, timeout=10, by=By.CSS_SELECTOR):
@@ -292,6 +365,18 @@ class UberEatsDeals:
         try:
             conn = sqlite3.connect("uber_deals.db")
             cursor = conn.cursor()
+            
+            # Check if table exists and has url_hash column
+            cursor.execute("PRAGMA table_info(deals)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            # If table exists but doesn't have url_hash, drop it
+            if columns and 'url_hash' not in columns:
+                print("Updating database schema: Adding url_hash column...")
+                cursor.execute('DROP TABLE IF EXISTS deals')
+                conn.commit()
+            
+            # Create table with current schema
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS deals (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,9 +460,77 @@ class UberEatsDeals:
             except Exception as e:
                 print(f"Error saving deal to database: {str(e)}")
 
+    async def get_existing_deals(self, url: str) -> List[Dict]:
+        """Check if we already have deals for this URL in the database."""
+        url_hash = self.get_url_hash(url)
+        try:
+            conn = sqlite3.connect("uber_deals.db")
+            cursor = conn.cursor()
+            
+            # Get all deals for this URL hash
+            cursor.execute('''
+                SELECT 
+                    restaurant,
+                    item_name,
+                    price,
+                    description,
+                    promotion_type,
+                    delivery_fee,
+                    rating_and_reviews,
+                    delivery_time,
+                    url,
+                    timestamp
+                FROM deals 
+                WHERE url_hash = ?
+                ORDER BY timestamp DESC
+            ''', (url_hash,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if rows:
+                # Convert rows to list of dictionaries
+                deals = []
+                for row in rows:
+                    deal = {
+                        'restaurant': row[0],
+                        'name': row[1],
+                        'price': row[2],
+                        'description': row[3],
+                        'promotion': row[4],
+                        'delivery_fee': row[5],
+                        'rating_and_reviews': row[6],
+                        'delivery_time': row[7],
+                        'url': row[8],
+                        'timestamp': row[9]
+                    }
+                    deals.append(deal)
+                return deals
+            return []
+            
+        except Exception as e:
+            print(f"Error checking existing deals: {str(e)}")
+            return []
+
+    def initialize_driver(self):
+        """Initialize the Chrome driver when needed."""
+        if self.driver is None:
+            self.setup_driver()
+
     async def get_restaurant_deals(self, url):
         """Extract deals from the offer page."""
         try:
+            # First check if we already have deals for this URL
+            existing_deals = await self.get_existing_deals(url)
+            if existing_deals:
+                print(f"Found {len(existing_deals)} existing deals in database")
+                self.deals = existing_deals
+                return
+            
+            # If no existing deals, initialize driver and fetch new ones
+            print("No existing deals found, fetching from website...")
+            self.initialize_driver()
+            
             print("Loading page...")
             self.driver.get(url)
             
@@ -542,8 +695,9 @@ class UberEatsDeals:
         
     def cleanup(self):
         """Clean up resources."""
-        if hasattr(self, 'driver'):
+        if self.driver is not None:
             self.driver.quit()
+            self.driver = None
 
 def view_stored_deals():
     """View all deals stored in the database."""
