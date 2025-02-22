@@ -2,3 +2,4 @@
 debug_output/
 *.db
 .env
+**/__pycache__/**

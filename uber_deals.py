@@ -95,7 +95,14 @@ class UberEatsDeals:
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
+        chrome_options.add_argument("--disable-software-rasterizer")
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+        
+        # Add Docker/Linux-specific Chrome options
+        chrome_data_dir = os.getenv('CHROME_DATA_DIR', os.path.expanduser('~/.chrome-data'))
+        chrome_options.add_argument(f"--user-data-dir={chrome_data_dir}")
+        chrome_options.add_argument("--remote-debugging-port=9222")
         
         try:
             # Clean up any existing ChromeDriver installations
@@ -103,20 +110,32 @@ class UberEatsDeals:
             if os.path.exists(wdm_path):
                 shutil.rmtree(wdm_path)
             
-            # Check if Chrome is installed
-            if platform.system() == "Darwin":  # macOS
-                if not os.path.exists("/Applications/Google Chrome.app"):
-                    print("Error: Google Chrome is not installed in the default location.")
-                    print("Please install Chrome from https://www.google.com/chrome/")
-                    sys.exit(1)
-                chrome_options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            # Check for Chrome binary in common Linux locations
+            chrome_locations = [
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "/snap/bin/chromium",
+            ]
             
-            # Get Chrome version
-            chrome_version = self.get_chrome_version()
-            if chrome_version:
-                print(f"Detected Chrome version: {chrome_version}")
+            # For macOS
+            if platform.system() == "Darwin" and os.path.exists("/Applications/Google Chrome.app"):
+                chrome_options.binary_location = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            # For Linux
             else:
-                print("Warning: Could not detect Chrome version")
+                chrome_found = False
+                for location in chrome_locations:
+                    if os.path.exists(location):
+                        chrome_options.binary_location = location
+                        chrome_found = True
+                        print(f"Found Chrome at: {location}")
+                        break
+                
+                if not chrome_found:
+                    print("Warning: Could not find Chrome binary in standard locations")
+                    print("Available system binaries:")
+                    os.system("which google-chrome google-chrome-stable chromium chromium-browser 2>/dev/null")
             
             # Install and setup ChromeDriver
             print("Installing ChromeDriver...")
@@ -137,7 +156,9 @@ class UberEatsDeals:
             print(f"Architecture: {platform.machine()}")
             print(f"Python version: {sys.version}")
             print("\nTroubleshooting steps:")
-            print("1. Make sure Google Chrome is installed and up to date")
+            print("1. Make sure Google Chrome or Chromium is installed:")
+            print("   Ubuntu/Debian: sudo apt install google-chrome-stable")
+            print("   Or: sudo apt install chromium-browser")
             print("2. Try running 'pip install --upgrade webdriver-manager selenium'")
             print("3. If the error persists, try removing ~/.wdm/ directory manually")
             sys.exit(1)
@@ -204,16 +225,19 @@ class UberEatsDeals:
                     with open(os.path.join(debug_dir, f"menu_item_{index}.html"), "w", encoding='utf-8') as f:
                         f.write(item)
                     
-                    response = await asyncio.to_thread(
-                        client.chat.completions.create,
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": "You are a specialized HTML parser focused on extracting deal information from Uber Eats pages."},
-                            {"role": "user", "content": DEAL_EXTRACTION_PROMPT + item}
-                        ],
-                        temperature=0.1,
-                        max_tokens=1000
-                    )
+                    try:
+                        response = await asyncio.to_thread(
+                            client.chat.completions.create,
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": "You are a specialized HTML parser focused on extracting deal information from Uber Eats pages."},
+                                {"role": "user", "content": DEAL_EXTRACTION_PROMPT + item}
+                            ],
+                            temperature=0.1,
+                            max_tokens=1000
+                        )
+                    except Exception as api_error:
+                        raise Exception(f"OpenAI API error: {str(api_error)}") from api_error
                     
                     # Save the raw response
                     with open(os.path.join(debug_dir, f"response_{index}.json"), "w", encoding='utf-8') as f:
@@ -227,22 +251,31 @@ class UberEatsDeals:
                     if '```json' in content:
                         content = content.split('```json')[1].split('```')[0]
                     
-                    result = json.loads(content.strip())
+                    try:
+                        result = json.loads(content.strip())
+                    except json.JSONDecodeError as json_error:
+                        raise Exception(f"Failed to parse OpenAI response as JSON: {str(json_error)}") from json_error
+                    
                     if result.get('deals'):
                         print(f"Found {len(result['deals'])} deals in menu item {index+1}")
                         return result['deals']
                     return []
                 except Exception as e:
                     print(f"Error processing menu item {index+1}: {str(e)}")
-                    return []
+                    raise  # Re-raise the exception to be handled by the caller
             
             # Process all menu items concurrently
             tasks = [process_menu_item(item, i) for i, item in enumerate(menu_items)]
-            results = await asyncio.gather(*tasks)
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as e:
+                raise Exception(f"Failed to process menu items: {str(e)}")
             
-            # Combine all results
-            for deals in results:
-                all_deals.extend(deals)
+            # Check for exceptions in results
+            for result in results:
+                if isinstance(result, Exception):
+                    raise result
+                all_deals.extend(result)
             
             # Save final results
             with open(os.path.join(debug_dir, "final_deals.json"), "w", encoding='utf-8') as f:
@@ -253,7 +286,7 @@ class UberEatsDeals:
         except Exception as e:
             print(f"Error using OpenAI to extract deals: {str(e)}")
             traceback.print_exc()
-            return []
+            raise  # Re-raise the exception to be handled by the caller
 
     async def extract_deal_details(self, card_link):
         """Extract specific deal information from a restaurant page."""
@@ -279,54 +312,37 @@ class UberEatsDeals:
         return deals
 
     def setup_database(self):
-        """Initialize SQLite database and create tables if they don't exist."""
-        self.db_path = "uber_deals.db"
-        
-        # Create the initial connection and schema
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Configure SQLite for immediate disk writes
-        cursor.execute('PRAGMA journal_mode=DELETE')  # Use delete mode instead of WAL
-        cursor.execute('PRAGMA synchronous=FULL')     # Ensure writes are synced to disk
-        cursor.execute('PRAGMA cache_size=0')         # Disable caching
-        
-        # Drop existing table if it exists (to handle schema changes)
-        cursor.execute('DROP TABLE IF EXISTS deals')
-        
-        # Define schema mapping
-        self.schema_mapping = {
-            'restaurant': 'Restaurant',
-            'delivery_fee': 'Delivery Fee',
-            'rating_and_reviews': 'Rating & Reviews',
-            'delivery_time': 'Delivery Time',
-            'card_promotion': 'Card Promotion',
-            'item_name': 'name',
-            'price': 'price',  # This will now be a float
-            'description': 'description',
-            'promotion_type': 'promotion',
-            'url': 'url'
-        }
-        
-        # Create deals table with consistent column names and proper price type
-        cursor.execute('''
-            CREATE TABLE deals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                restaurant TEXT,
-                delivery_fee TEXT,
-                rating_and_reviews TEXT,
-                delivery_time TEXT,
-                card_promotion TEXT,
-                item_name TEXT,
-                price REAL,
-                description TEXT,
-                promotion_type TEXT,
-                url TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.commit()
-        conn.close()
+        """Set up the SQLite database with the deals table."""
+        try:
+            conn = sqlite3.connect("uber_deals.db")
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS deals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    url_hash TEXT NOT NULL,
+                    restaurant TEXT NOT NULL,
+                    item_name TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    description TEXT,
+                    promotion_type TEXT,
+                    delivery_fee TEXT,
+                    rating_and_reviews TEXT,
+                    delivery_time TEXT,
+                    url TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(url_hash, item_name)
+                )
+            ''')
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error setting up database: {str(e)}")
+            sys.exit(1)
+
+    def get_url_hash(self, url: str) -> str:
+        """Generate a hash for the URL."""
+        import hashlib
+        return hashlib.sha256(url.encode()).hexdigest()[:16]
 
     def validate_deal_info(self, deal_info: Dict) -> Dict:
         """Validate and clean deal info according to schema."""
@@ -349,34 +365,39 @@ class UberEatsDeals:
         return validated_data
     
     async def save_deal_to_db(self, deal_info: Dict):
-        """Save a deal to the SQLite database."""
-        try:
-            # Validate and clean the deal info
-            validated_data = self.validate_deal_info(deal_info)
-            validated_data['timestamp'] = datetime.now().isoformat()
-            
-            # Prepare column names and placeholders for SQL query
-            columns = ', '.join(validated_data.keys())
-            placeholders = ', '.join(['?' for _ in validated_data])
-            query = f'INSERT INTO deals ({columns}) VALUES ({placeholders})'
-            values = list(validated_data.values())
-            
-            # Use lock to ensure thread-safe database access
-            async with self.db_lock:
-                # Create a new connection for this operation
-                conn = sqlite3.connect(self.db_path)
+        """Save a deal to the database with URL hash."""
+        async with self.db_lock:
+            try:
+                conn = sqlite3.connect("uber_deals.db")
                 cursor = conn.cursor()
-                try:
-                    cursor.execute(query, values)
-                    conn.commit()
-                finally:
-                    cursor.close()
-                    conn.close()
-            
-        except Exception as e:
-            print(f"Error saving deal to database: {str(e)}")
-            print(f"Original deal info: {json.dumps(deal_info, indent=2)}")
-            print(f"Validated data: {json.dumps(validated_data, indent=2)}")
+                
+                # Get URL hash
+                url_hash = self.get_url_hash(deal_info.get('url', ''))
+                
+                # Prepare the deal info with URL hash
+                cursor.execute('''
+                    INSERT OR REPLACE INTO deals (
+                        url_hash, restaurant, item_name, price, description,
+                        promotion_type, delivery_fee, rating_and_reviews,
+                        delivery_time, url, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (
+                    url_hash,
+                    deal_info.get('restaurant', ''),
+                    deal_info.get('name', ''),
+                    float(deal_info.get('price', 0.0)),
+                    deal_info.get('description', ''),
+                    deal_info.get('promotion', ''),
+                    deal_info.get('delivery_fee', ''),
+                    deal_info.get('rating_and_reviews', ''),
+                    deal_info.get('delivery_time', ''),
+                    deal_info.get('url', '')
+                ))
+                
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                print(f"Error saving deal to database: {str(e)}")
 
     async def get_restaurant_deals(self, url):
         """Extract deals from the offer page."""
@@ -398,7 +419,8 @@ class UberEatsDeals:
                     break
                 last_height = new_height
             
-            store_cards = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="store-card"]')
+            child_store_cards = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="store-card"]')
+            store_cards = [card.find_element(By.XPATH, '..') for card in child_store_cards]
             print(f"Found {len(store_cards)} store cards")
             
             if not store_cards:
@@ -416,28 +438,25 @@ class UberEatsDeals:
             # Process store cards concurrently
             async def process_store_card(card):
                 try:
+                    # Find the store card link element (either the card itself or its child)
+                    link_element = card if card.tag_name == 'a' else card.find_element(By.CSS_SELECTOR, '[data-testid="store-card"]')
+                    
                     # Get restaurant name
                     name = None
                     try:
-                        name = card.find_element(By.TAG_NAME, 'h3').text.strip()
+                        name = link_element.find_element(By.TAG_NAME, 'h3').text.strip()
                     except NoSuchElementException:
                         try:
-                            name = card.find_element(By.CSS_SELECTOR, 'a').get_attribute('aria-label')
+                            name = link_element.get_attribute('aria-label')
                         except NoSuchElementException:
-                            try:
-                                name_divs = card.find_elements(By.XPATH, 
-                                    ".//div[contains(@class, 'bo') and contains(@class, 'na')]")
-                                if name_divs:
-                                    name = name_divs[0].text.strip()
-                            except NoSuchElementException:
-                                pass
+                            pass
                     
                     if not name:
                         return []
                     
                     # Get the restaurant link
                     try:
-                        link = card.get_attribute('href')
+                        link = link_element.get_attribute('href')
                         if not link:
                             raise NoSuchElementException("Link is empty")
                     except NoSuchElementException:
@@ -458,9 +477,9 @@ class UberEatsDeals:
                     
                     # Get promotion from the card
                     try:
-                        promo_tag = card.find_element(
+                        promo_tag = link_element.find_element(
                             By.XPATH,
-                            ".//span[contains(@class, 'bo') and contains(@class, 'ej')]//div[contains(text(), 'Buy 1, Get 1') or contains(text(), 'Top Offer')]"
+                            ".//div[contains(text(), 'Buy 1, Get 1') or contains(text(), 'Top Offer')]"
                         )
                         if promo_tag:
                             basic_info['Card Promotion'] = promo_tag.text.strip()
@@ -469,7 +488,7 @@ class UberEatsDeals:
                     
                     # Get delivery fee
                     try:
-                        fee_elements = card.find_elements(By.XPATH, ".//*[contains(text(), '€') and contains(text(), 'Delivery Fee')]")
+                        fee_elements = link_element.find_elements(By.XPATH, ".//*[contains(text(), '€') and contains(text(), 'Delivery Fee')]")
                         if fee_elements:
                             basic_info['Delivery Fee'] = fee_elements[0].text.strip()
                     except NoSuchElementException:
@@ -477,17 +496,20 @@ class UberEatsDeals:
                     
                     # Get rating and review count
                     try:
-                        rating_elements = card.find_elements(By.XPATH, ".//*[contains(text(), '(') and contains(text(), '+')]")
-                        if rating_elements:
-                            rating_text = rating_elements[0].text.strip()
-                            rating_number = card.find_element(By.XPATH, ".//*[string-length(text()) <= 3 and contains(text(), '.')]").text.strip()
-                            basic_info['Rating & Reviews'] = f"{rating_number} {rating_text}"
+                        # Find rating number (appears before the star)
+                        rating_spans = card.find_elements(By.XPATH, ".//span[contains(@title, '.')]")
+                        reviews_spans = card.find_elements(By.XPATH, ".//span[contains(@title, '+')]")
+                        
+                        if rating_spans and reviews_spans:
+                            rating_number = rating_spans[0].get_attribute('title')
+                            reviews_count = reviews_spans[0].get_attribute('title')
+                            basic_info['Rating & Reviews'] = f"{rating_number} ({reviews_count})"
                     except NoSuchElementException:
                         pass
                     
                     # Get delivery time
                     try:
-                        time_elements = card.find_elements(By.XPATH, ".//*[contains(text(), 'min')]")
+                        time_elements = card.find_elements(By.XPATH, ".//*[contains(text(), 'Min')]")
                         if time_elements:
                             basic_info['Delivery Time'] = time_elements[-1].text.strip()
                     except NoSuchElementException:
@@ -503,7 +525,7 @@ class UberEatsDeals:
                         deal_info.update(deal)
                         deal_info['url'] = link
                         deals.append(deal_info)
-                        await self.save_deal_to_db(deal_info)  # Use the async version
+                        await self.save_deal_to_db(deal_info)
                         print(f"Added deal: {deal.get('name', 'Unknown')} from {name}")
                     
                     if not specific_deals:
