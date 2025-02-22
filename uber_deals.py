@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import platform
@@ -277,7 +278,7 @@ class UberEatsDeals:
                     try:
                         response = await asyncio.to_thread(
                             client.chat.completions.create,
-                            model="gpt-4o-mini",
+                            model="gpt-4o",
                             messages=[
                                 {"role": "system", "content": "You are a specialized HTML parser focused on extracting deal information from Uber Eats pages."},
                                 {"role": "user", "content": DEAL_EXTRACTION_PROMPT + item}
@@ -369,7 +370,6 @@ class UberEatsDeals:
             # Check if table exists and has url_hash column
             cursor.execute("PRAGMA table_info(deals)")
             columns = [column[1] for column in cursor.fetchall()]
-            
             # If table exists but doesn't have url_hash, drop it
             if columns and 'url_hash' not in columns:
                 print("Updating database schema: Adding url_hash column...")
@@ -402,7 +402,6 @@ class UberEatsDeals:
 
     def get_url_hash(self, url: str) -> str:
         """Generate a hash for the URL."""
-        import hashlib
         return hashlib.sha256(url.encode()).hexdigest()[:16]
 
     def validate_deal_info(self, deal_info: Dict) -> Dict:
@@ -436,13 +435,14 @@ class UberEatsDeals:
                 url_hash = self.get_url_hash(deal_info.get('url', ''))
                 
                 # Prepare the deal info with URL hash
-                cursor.execute('''
+                insert_query = '''
                     INSERT OR REPLACE INTO deals (
                         url_hash, restaurant, item_name, price, description,
                         promotion_type, delivery_fee, rating_and_reviews,
                         delivery_time, url, timestamp
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (
+                '''
+                insert_values = (
                     url_hash,
                     deal_info.get('restaurant', ''),
                     deal_info.get('name', ''),
@@ -453,8 +453,8 @@ class UberEatsDeals:
                     deal_info.get('rating_and_reviews', ''),
                     deal_info.get('delivery_time', ''),
                     deal_info.get('url', '')
-                ))
-                
+                )
+                cursor.execute(insert_query, insert_values)
                 conn.commit()
                 conn.close()
             except Exception as e:
@@ -549,14 +549,9 @@ class UberEatsDeals:
                 last_height = new_height
             
             child_store_cards = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="store-card"]')
+            import pdb; pdb.set_trace()
             store_cards = [card.find_element(By.XPATH, '..') for card in child_store_cards]
             print(f"Found {len(store_cards)} store cards")
-            
-            if not store_cards:
-                print("No store cards found. Saving page source for debugging...")
-                with open("debug_page.html", "w", encoding='utf-8') as f:
-                    f.write(self.driver.page_source)
-                return
             
             # Debug: Save HTML of first card
             if store_cards:
@@ -596,12 +591,11 @@ class UberEatsDeals:
                         link = link + '&mod=quickView'
                     else:
                         link = link + '?mod=quickView'
-                    
                     basic_info = {
-                        'Restaurant': name,
-                        'Delivery Fee': "Not specified",
-                        'Rating & Reviews': "",
-                        'Delivery Time': "Not specified"
+                        'restaurant': name,
+                        'delivery_fee': "Not specified", 
+                        'rating_and_reviews': "",
+                        'delivery_time': "Not specified"
                     }
                     
                     # Get promotion from the card
@@ -611,15 +605,15 @@ class UberEatsDeals:
                             ".//div[contains(text(), 'Buy 1, Get 1') or contains(text(), 'Top Offer')]"
                         )
                         if promo_tag:
-                            basic_info['Card Promotion'] = promo_tag.text.strip()
+                            basic_info['promotion'] = promo_tag.text.strip()
                     except NoSuchElementException:
-                        basic_info['Card Promotion'] = "No promotion displayed"
+                        basic_info['promotion'] = "No promotion displayed"
                     
                     # Get delivery fee
                     try:
                         fee_elements = link_element.find_elements(By.XPATH, ".//*[contains(text(), '€') and contains(text(), 'Delivery Fee')]")
                         if fee_elements:
-                            basic_info['Delivery Fee'] = fee_elements[0].text.strip()
+                            basic_info['delivery_fee'] = fee_elements[0].text.strip()
                     except NoSuchElementException:
                         pass
                     
@@ -632,7 +626,7 @@ class UberEatsDeals:
                         if rating_spans and reviews_spans:
                             rating_number = rating_spans[0].get_attribute('title')
                             reviews_count = reviews_spans[0].get_attribute('title')
-                            basic_info['Rating & Reviews'] = f"{rating_number} ({reviews_count})"
+                            basic_info['rating_and_reviews'] = f"{rating_number} ({reviews_count})"
                     except NoSuchElementException:
                         pass
                     
@@ -640,7 +634,7 @@ class UberEatsDeals:
                     try:
                         time_elements = card.find_elements(By.XPATH, ".//*[contains(text(), 'Min')]")
                         if time_elements:
-                            basic_info['Delivery Time'] = time_elements[-1].text.strip()
+                            basic_info['delivery_time'] = time_elements[-1].text.strip()
                     except NoSuchElementException:
                         pass
                     
@@ -675,14 +669,11 @@ class UberEatsDeals:
                 self.deals.extend(deals)
             
             if not self.deals:
-                print("No deals could be extracted. Check debug_page.html for content.")
+                print("No deals could be extracted.")
                 
         except Exception as e:
             print(f"Error accessing the page: {str(e)}")
-            print("Saving full page source for debugging...")
-            with open("debug_page.html", "w", encoding='utf-8') as f:
-                f.write(self.driver.page_source)
-
+            
     def display_results(self):
         """Display the results in a formatted table."""
         if not self.deals:

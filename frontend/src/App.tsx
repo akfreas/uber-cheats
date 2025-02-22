@@ -24,6 +24,7 @@ function App() {
         <Routes>
           <Route path="/" element={<UrlInput />} />
           <Route path="/deals" element={<DealsTable />} />
+          <Route path="/deals/:hash" element={<DealsTable />} />
         </Routes>
       </Router>
     </ThemeProvider>

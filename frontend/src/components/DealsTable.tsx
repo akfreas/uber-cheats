@@ -26,6 +26,7 @@ import {
   useReactTable
 } from '@tanstack/react-table';
 import React, { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import config from '../config';
 
 interface Deal {
@@ -47,12 +48,22 @@ const DealsTable: React.FC = () => {
   const [data, setData] = useState<Deal[]>([]);
   const [globalFilter, setGlobalFilter] = useState('');
   const [error, setError] = useState('');
+  const location = useLocation();
 
   useEffect(() => {
     const fetchDeals = async () => {
       try {
-        const response = await fetch(config.endpoints.deals);
+        // Get hash from URL if present
+        const hash = location.hash.slice(1); // Remove the # character
+        
+        // Choose endpoint based on whether we have a hash
+        const endpoint = hash ? config.endpoints.dealsByHash(hash) : config.endpoints.deals;
+        
+        const response = await fetch(endpoint);
         if (!response.ok) {
+          if (response.status === 404) {
+            throw new Error('No deals found for this link');
+          }
           throw new Error('Failed to fetch deals');
         }
         const deals = await response.json();
@@ -63,7 +74,7 @@ const DealsTable: React.FC = () => {
     };
 
     fetchDeals();
-  }, []);
+  }, [location.hash]);
 
   const columns = useMemo(() => [
     columnHelper.accessor((row) => row.restaurant, {

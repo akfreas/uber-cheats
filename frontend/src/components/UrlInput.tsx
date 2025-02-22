@@ -22,6 +22,7 @@ const UrlInput: React.FC = () => {
   const navigate = useNavigate();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [sessionId] = useState(uuidv4());
+  const [urlHash, setUrlHash] = useState<string>('');
 
   // Cleanup WebSocket on component unmount
   useEffect(() => {
@@ -93,7 +94,10 @@ const UrlInput: React.FC = () => {
 
       const data = await response.json();
       if (data.status === 'success') {
-        navigate('/deals');
+        // Generate hash from URL
+        const hash = await generateHash(url);
+        setUrlHash(hash);
+        navigate(`/deals#${hash}`);
       } else {
         setError(data.message || 'An error occurred');
       }
@@ -105,6 +109,27 @@ const UrlInput: React.FC = () => {
         websocket.close();
       }
     }
+  };
+
+  // Function to generate hash from URL
+  const generateHash = async (url: string): Promise<string> => {
+    const response = await fetch(config.endpoints.findDeals, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url, session_id: sessionId }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to fetch deals');
+    }
+
+    const data = await response.json();
+    if (data.status === 'success' && data.hash) {
+      return data.hash;
+    }
+    throw new Error('No hash returned from server');
   };
 
   return (
@@ -174,6 +199,17 @@ const UrlInput: React.FC = () => {
             <Typography color="error" align="center">
               {error}
             </Typography>
+          )}
+
+          {urlHash && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="body2" align="center">
+                Share this link to view these deals:
+              </Typography>
+              <Link href={`/deals#${urlHash}`}>
+                {window.location.origin}/deals#{urlHash}
+              </Link>
+            </Box>
           )}
         </Paper>
       </Box>

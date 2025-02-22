@@ -6,6 +6,7 @@ export const config = {
   endpoints: {
     deals: `${API_URL}/api/deals`,
     findDeals: `${API_URL}/api/find-deals`,
+    dealsByHash: (hash: string) => `${API_URL}/api/deals/${hash}`,
     websocket: (sessionId: string) => `${API_URL.replace(/^http/, 'ws')}/ws/${sessionId}`,
   }
 };
