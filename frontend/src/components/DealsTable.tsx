@@ -26,7 +26,7 @@ import {
   useReactTable
 } from '@tanstack/react-table';
 import React, { useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import config from '../config';
 
 interface Deal {
@@ -48,13 +48,14 @@ const DealsTable: React.FC = () => {
   const [data, setData] = useState<Deal[]>([]);
   const [globalFilter, setGlobalFilter] = useState('');
   const [error, setError] = useState('');
-  const location = useLocation();
+  const [loading, setLoading] = useState(true);
+  const { hash } = useParams<{ hash?: string }>();
 
   useEffect(() => {
     const fetchDeals = async () => {
       try {
-        // Get hash from URL if present
-        const hash = location.hash.slice(1); // Remove the # character
+        setLoading(true);
+        setError('');
         
         // Choose endpoint based on whether we have a hash
         const endpoint = hash ? config.endpoints.dealsByHash(hash) : config.endpoints.deals;
@@ -70,11 +71,14 @@ const DealsTable: React.FC = () => {
         setData(deals);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'An error occurred');
+        setData([]);
+      } finally {
+        setLoading(false);
       }
     };
 
     fetchDeals();
-  }, [location.hash]);
+  }, [hash]);
 
   const columns = useMemo(() => [
     columnHelper.accessor((row) => row.restaurant, {
@@ -151,8 +155,12 @@ const DealsTable: React.FC = () => {
           sx={{ mb: 2 }}
         />
 
-        {error ? (
+        {loading ? (
+          <Typography>Loading deals...</Typography>
+        ) : error ? (
           <Typography color="error">{error}</Typography>
+        ) : data.length === 0 ? (
+          <Typography>No deals found</Typography>
         ) : (
           <TableContainer component={Paper}>
             <Table>

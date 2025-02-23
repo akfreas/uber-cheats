@@ -5,9 +5,9 @@ if [[ -z "${VIRTUAL_ENV}" ]]; then
     source /app/venv/bin/activate
 fi
 
-# Start the backend server
+# Start the backend server with reload enabled
 cd backend
-python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 &
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
 BACKEND_PID=$!
 
 # Start the frontend development server

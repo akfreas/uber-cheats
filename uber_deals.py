@@ -226,14 +226,6 @@ class UberEatsDeals:
     async def extract_deals_with_llm(self, html_content: str) -> List[Dict]:
         """Use OpenAI to extract deals from HTML content."""
         try:
-            # Create debug directory if it doesn't exist
-            debug_dir = "debug_output"
-            os.makedirs(debug_dir, exist_ok=True)
-            
-            # Save the full HTML content
-            with open(os.path.join(debug_dir, "full_html.html"), "w", encoding='utf-8') as f:
-                f.write(html_content)
-            
             # Parse HTML with BeautifulSoup to extract relevant content
             soup = BeautifulSoup(html_content, 'html.parser')
             
@@ -261,20 +253,12 @@ class UberEatsDeals:
                 print("No menu items found with promotions")
                 return []
             
-            # Save extracted menu items for debugging
-            with open(os.path.join(debug_dir, "extracted_menu_items.html"), "w", encoding='utf-8') as f:
-                f.write("\n---MENU ITEM SEPARATOR---\n".join(menu_items))
-            
             # Process menu items concurrently
             all_deals = []
             client = openai.OpenAI(api_key=OPENAI_API_KEY)
             
             async def process_menu_item(item, index):
                 try:
-                    # Save individual item for debugging
-                    with open(os.path.join(debug_dir, f"menu_item_{index}.html"), "w", encoding='utf-8') as f:
-                        f.write(item)
-                    
                     try:
                         response = await asyncio.to_thread(
                             client.chat.completions.create,
@@ -289,14 +273,7 @@ class UberEatsDeals:
                     except Exception as api_error:
                         raise Exception(f"OpenAI API error: {str(api_error)}") from api_error
                     
-                    # Save the raw response
-                    with open(os.path.join(debug_dir, f"response_{index}.json"), "w", encoding='utf-8') as f:
-                        f.write(str(response))
-                    
                     content = response.choices[0].message.content
-                    # Save the content separately
-                    with open(os.path.join(debug_dir, f"content_{index}.json"), "w", encoding='utf-8') as f:
-                        f.write(content)
                     
                     if '```json' in content:
                         content = content.split('```json')[1].split('```')[0]
@@ -312,8 +289,8 @@ class UberEatsDeals:
                     return []
                 except Exception as e:
                     print(f"Error processing menu item {index+1}: {str(e)}")
-                    raise  # Re-raise the exception to be handled by the caller
-            
+                    raise
+
             # Process all menu items concurrently
             tasks = [process_menu_item(item, i) for i, item in enumerate(menu_items)]
             try:
@@ -326,10 +303,6 @@ class UberEatsDeals:
                 if isinstance(result, Exception):
                     raise result
                 all_deals.extend(result)
-            
-            # Save final results
-            with open(os.path.join(debug_dir, "final_deals.json"), "w", encoding='utf-8') as f:
-                json.dump(all_deals, f, indent=2)
             
             return all_deals
             
@@ -549,15 +522,8 @@ class UberEatsDeals:
                 last_height = new_height
             
             child_store_cards = self.driver.find_elements(By.CSS_SELECTOR, '[data-testid="store-card"]')
-            import pdb; pdb.set_trace()
             store_cards = [card.find_element(By.XPATH, '..') for card in child_store_cards]
             print(f"Found {len(store_cards)} store cards")
-            
-            # Debug: Save HTML of first card
-            if store_cards:
-                with open("first_card.html", "w", encoding='utf-8') as f:
-                    f.write(store_cards[0].get_attribute('outerHTML'))
-                print("Saved first card HTML to first_card.html")
             
             # Process store cards concurrently
             async def process_store_card(card):

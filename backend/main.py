@@ -1,10 +1,12 @@
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -105,9 +107,6 @@ async def find_deals(input_data: URLInput):
 
 @app.get("/api/deals")
 async def get_deals():
-    import sqlite3
-
-    import pandas as pd
     
     try:
         conn = sqlite3.connect("uber_deals.db")
@@ -137,6 +136,21 @@ async def get_deals():
 async def get_deals_by_hash(url_hash: str):
     try:
         conn = sqlite3.connect("uber_deals.db")
+        
+        # First check if there are any entries in the deals table
+        check_query = "SELECT COUNT(*) FROM deals"
+        cursor = conn.cursor()
+        cursor.execute(check_query)
+        total_count = cursor.fetchone()[0]
+        print(f"Total deals in database: {total_count}")
+
+        # Get all unique url_hashes for debugging
+        hash_query = "SELECT DISTINCT url_hash FROM deals"
+        cursor.execute(hash_query)
+        hashes = cursor.fetchall()
+        print(f"All URL hashes in database: {[h[0] for h in hashes]}")
+        print(f"Looking for hash: {url_hash}")
+        
         query = '''
             SELECT 
                 restaurant,
@@ -155,15 +169,16 @@ async def get_deals_by_hash(url_hash: str):
         '''
         df = pd.read_sql_query(query, conn, params=(url_hash,))
         deals = df.to_dict('records')
+        print(f"Found {len(deals)} deals for hash {url_hash}")
         conn.close()
         
         if not deals:
-            raise HTTPException(status_code=404, detail="No deals found for this hash")
+            raise HTTPException(status_code=404, detail=f"No deals found for this hash: {url_hash}")
             
         return deals
     except Exception as e:
+        print(f"Error fetching deals by hash: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000) 

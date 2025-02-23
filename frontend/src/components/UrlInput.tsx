@@ -22,7 +22,6 @@ const UrlInput: React.FC = () => {
   const navigate = useNavigate();
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [sessionId] = useState(uuidv4());
-  const [urlHash, setUrlHash] = useState<string>('');
 
   // Cleanup WebSocket on component unmount
   useEffect(() => {
@@ -43,12 +42,19 @@ const UrlInput: React.FC = () => {
     };
 
     websocket.onerror = () => {
+      console.error('WebSocket error occurred');
       setError('Connection error occurred');
-      setIsLoading(false);
+      // Don't set isLoading to false here, let the reconnection attempt handle it
     };
 
     websocket.onclose = () => {
-      setWs(null);
+      console.log('WebSocket closed, attempting to reconnect...');
+      // Try to reconnect after 1 second
+      setTimeout(() => {
+        if (isLoading) {  // Only reconnect if we're still loading
+          setWs(setupWebSocket());
+        }
+      }, 1000);
     };
 
     return websocket;
@@ -65,20 +71,23 @@ const UrlInput: React.FC = () => {
     const websocket = setupWebSocket();
     setWs(websocket);
 
-    // Wait for WebSocket connection to be established
-    await new Promise<void>((resolve) => {
-      websocket.onopen = () => resolve();
-      websocket.onerror = () => {
-        setError('Failed to establish connection with server');
-        setIsLoading(false);
-        resolve();
-      };
-    });
-
-    if (websocket.readyState !== WebSocket.OPEN) {
+    // Wait for WebSocket connection to be established with timeout
+    try {
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          websocket.onopen = () => resolve();
+          websocket.onerror = () => reject(new Error('Failed to establish connection'));
+        }),
+        new Promise<void>((_, reject) => 
+          setTimeout(() => reject(new Error('Connection timeout')), 5000)
+        )
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Connection failed');
+      setIsLoading(false);
       return;
     }
-    
+
     try {
       const response = await fetch(config.endpoints.findDeals, {
         method: 'POST',
@@ -94,10 +103,12 @@ const UrlInput: React.FC = () => {
 
       const data = await response.json();
       if (data.status === 'success') {
-        // Generate hash from URL
-        const hash = await generateHash(url);
-        setUrlHash(hash);
-        navigate(`/deals#${hash}`);
+        // Navigate using the hash from the response
+        if (data.hash) {
+          navigate(`/deals/${data.hash}`);
+        } else {
+          throw new Error('No hash returned from server');
+        }
       } else {
         setError(data.message || 'An error occurred');
       }
@@ -109,27 +120,6 @@ const UrlInput: React.FC = () => {
         websocket.close();
       }
     }
-  };
-
-  // Function to generate hash from URL
-  const generateHash = async (url: string): Promise<string> => {
-    const response = await fetch(config.endpoints.findDeals, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ url, session_id: sessionId }),
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to fetch deals');
-    }
-
-    const data = await response.json();
-    if (data.status === 'success' && data.hash) {
-      return data.hash;
-    }
-    throw new Error('No hash returned from server');
   };
 
   return (
@@ -199,17 +189,6 @@ const UrlInput: React.FC = () => {
             <Typography color="error" align="center">
               {error}
             </Typography>
-          )}
-
-          {urlHash && (
-            <Box sx={{ mt: 2 }}>
-              <Typography variant="body2" align="center">
-                Share this link to view these deals:
-              </Typography>
-              <Link href={`/deals#${urlHash}`}>
-                {window.location.origin}/deals#{urlHash}
-              </Link>
-            </Box>
           )}
         </Paper>
       </Box>
