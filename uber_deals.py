@@ -114,7 +114,8 @@ def get_chrome_path():
     return chrome_path
 
 class UberEatsDeals:
-    def __init__(self):
+    def __init__(self, offer_url):
+        self.offer_url = offer_url
         self.setup_database()
         self.deals = []
         openai.api_key = OPENAI_API_KEY
@@ -262,7 +263,7 @@ class UberEatsDeals:
                     try:
                         response = await asyncio.to_thread(
                             client.chat.completions.create,
-                            model="gpt-4o",
+                            model="gpt-4o-mini",
                             messages=[
                                 {"role": "system", "content": "You are a specialized HTML parser focused on extracting deal information from Uber Eats pages."},
                                 {"role": "user", "content": DEAL_EXTRACTION_PROMPT + item}
@@ -405,7 +406,7 @@ class UberEatsDeals:
                 cursor = conn.cursor()
                 
                 # Get URL hash
-                url_hash = self.get_url_hash(deal_info.get('url', ''))
+                url_hash = self.get_url_hash(self.offer_url)
                 
                 # Prepare the deal info with URL hash
                 insert_query = '''
@@ -490,11 +491,11 @@ class UberEatsDeals:
         if self.driver is None:
             self.setup_driver()
 
-    async def get_restaurant_deals(self, url):
+    async def get_restaurant_deals(self):
         """Extract deals from the offer page."""
         try:
             # First check if we already have deals for this URL
-            existing_deals = await self.get_existing_deals(url)
+            existing_deals = await self.get_existing_deals(self.offer_url)
             if existing_deals:
                 print(f"Found {len(existing_deals)} existing deals in database")
                 self.deals = existing_deals
@@ -505,7 +506,7 @@ class UberEatsDeals:
             self.initialize_driver()
             
             print("Loading page...")
-            self.driver.get(url)
+            self.driver.get(self.offer_url)
             
             print("Waiting for content to load...")
             time.sleep(5)  # Initial wait for page load
@@ -807,9 +808,9 @@ async def main_async():
         shutil.rmtree('debug_output')
         print("Cleared debug output directory")
     
-    deals_finder = UberEatsDeals()
+    deals_finder = UberEatsDeals(args.offer_url)
     try:
-        await deals_finder.get_restaurant_deals(args.offer_url)
+        await deals_finder.get_restaurant_deals()
         deals_finder.display_results()
     finally:
         deals_finder.cleanup()

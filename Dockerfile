@@ -26,7 +26,7 @@ FROM ubuntu:22.04
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install necessary packages (including jq for JSON parsing)
+# Install necessary packages
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -87,6 +87,7 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | \
     chmod +x /usr/local/bin/chromedriver && \
     rm -rf /var/lib/apt/lists/* && \
     google-chrome --version
+
 # Set working directory
 WORKDIR /app
 
@@ -110,35 +111,6 @@ COPY --from=frontend-build /app/frontend/build /app/frontend/build
 # Copy start script
 COPY start.sh .
 RUN chmod +x start.sh
-
-# Set up Chrome directories and permissions
-RUN mkdir -p /app/.chrome-data && \
-    mkdir -p /tmp/.X11-unix && \
-    chmod 1777 /tmp/.X11-unix && \
-    chown root:root /tmp/.X11-unix && \
-    # Ensure Chrome directories are properly set up
-    mkdir -p /var/lib/chrome && \
-    mkdir -p /var/lib/chrome/chrome && \
-    chmod -R 777 /var/lib/chrome
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV NODE_ENV=production
-ENV CHROME_DATA_DIR=/app/.chrome-data
-ENV DISPLAY=:99
-ENV CHROME_PATH=/usr/bin/google-chrome
-ENV CHROME_DRIVER_PATH=/usr/local/bin/chromedriver
-
-# Create a non-root user and set up permissions
-RUN useradd -m -d /home/chrome chrome && \
-    # Give chrome user access to necessary directories
-    chown -R chrome:chrome /app /app/venv /app/.chrome-data /var/lib/chrome && \
-    # Set up chromedriver permissions
-    chown root:chrome /usr/local/bin/chromedriver && \
-    chmod 755 /usr/local/bin/chromedriver && \
-    # Set up chrome permissions
-    chown root:chrome /usr/bin/google-chrome && \
-    chmod 755 /usr/bin/google-chrome
 
 # Create simple entrypoint script with Xvfb
 RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &\nsleep 1\nexec "$@"' > /app/entrypoint.sh && \

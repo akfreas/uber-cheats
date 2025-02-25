@@ -69,7 +69,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
 @app.post("/api/find-deals")
 async def find_deals(input_data: URLInput):
-    deals_finder = UberEatsDeals()
+    deals_finder = UberEatsDeals(input_data.url)
     try:
         # Initialize progress
         await send_progress_update(input_data.session_id, "Setting up Chrome driver...", 0.1)
@@ -92,7 +92,7 @@ async def find_deals(input_data: URLInput):
         
         # Get restaurant deals
         await send_progress_update(input_data.session_id, "Scanning restaurant page...", 0.2)
-        await deals_finder.get_restaurant_deals(input_data.url)
+        await deals_finder.get_restaurant_deals()
         
         # Final progress update
         await send_progress_update(input_data.session_id, "Completed!", 1.0)
@@ -101,6 +101,7 @@ async def find_deals(input_data: URLInput):
         url_hash = deals_finder.get_url_hash(input_data.url)
         return {"status": "success", "message": f"Found {total_deals_found} deals", "hash": url_hash}
     except Exception as e:
+        print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         deals_finder.cleanup()

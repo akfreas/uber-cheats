@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # Activate virtual environment if not already activated
 if [[ -z "${VIRTUAL_ENV}" ]]; then
