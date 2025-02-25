@@ -1,1 +1,1 @@
-*/30 * * * * cd /app && python3 /app/backend/cleanup_stale_deals.py >> /var/log/cron.log 2>&1 
+*/30 * * * * cd /app && python3 /app/backend/cleanup_stale_deals.py >> /var/log/cron.log 2>&1
