@@ -5,8 +5,8 @@ services:
     image: akfreas/uber-cheats:latest
     restart: unless-stopped
     ports:
-      - "80:3000"  # Map container port 3000 to host port 80 (for frontend)
-      - "8000:8000"  # Backend API
+      - "3001:3000"
+      - "8001:8000"
     volumes:
       - ./uber_deals.db:/app/uber_deals.db
       - ./.env:/app/.env
