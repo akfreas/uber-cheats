@@ -11,12 +11,9 @@ cd backend
 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
 BACKEND_PID=$!
 
-# Start the frontend development server
-cd ../frontend
-echo "Installing dependencies..."
-npm install
-echo "Starting React development server..."
-npm start &
+# Start a simple HTTP server for the frontend built files
+cd ../frontend/build
+python3 -m http.server 3000 &
 FRONTEND_PID=$!
 
 # Function to kill both servers
@@ -31,7 +28,7 @@ cleanup() {
 trap cleanup INT TERM
 
 echo "Backend server running on http://0.0.0.0:8000"
-echo "Frontend development server running on http://localhost:3000"
+echo "Frontend server running on http://localhost:3000"
 
 # Wait for either process to exit
 wait $BACKEND_PID $FRONTEND_PID 
