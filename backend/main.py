@@ -3,7 +3,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -145,12 +145,25 @@ async def get_deals_by_hash(url_hash: str):
         total_count = cursor.fetchone()[0]
         print(f"Total deals in database: {total_count}")
 
-        # Get all unique url_hashes for debugging
-        hash_query = "SELECT DISTINCT url_hash FROM deals"
-        cursor.execute(hash_query)
-        hashes = cursor.fetchall()
-        print(f"All URL hashes in database: {[h[0] for h in hashes]}")
-        print(f"Looking for hash: {url_hash}")
+        # Check for stale deals
+        stale_check_query = '''
+            SELECT MIN(timestamp) 
+            FROM deals 
+            WHERE url_hash = ?
+        '''
+        cursor.execute(stale_check_query, (url_hash,))
+        oldest_timestamp = cursor.fetchone()[0]
+        
+        if oldest_timestamp:
+            oldest_time = datetime.fromisoformat(oldest_timestamp)
+            if datetime.now() - oldest_time > timedelta(minutes=30):
+                # Delete stale deals
+                delete_query = "DELETE FROM deals WHERE url_hash = ?"
+                cursor.execute(delete_query, (url_hash,))
+                conn.commit()
+                print(f"Deleted stale deals for hash {url_hash}")
+                conn.close()
+                return []
         
         query = '''
             SELECT 
