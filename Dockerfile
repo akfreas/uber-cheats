@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y \
     jq \
     chromium-browser \
     chromium-chromedriver \
+    cron \
     && rm -rf /var/lib/apt/lists/*
 
 # Set up Python virtual environment
@@ -60,6 +61,12 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENV CHROME_BIN=/usr/bin/chromium-browser
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+
+# Setup cron job
+COPY backend/crontab /etc/cron.d/cleanup-cron
+RUN chmod 0644 /etc/cron.d/cleanup-cron
+RUN crontab /etc/cron.d/cleanup-cron
+RUN touch /var/log/cron.log
 
 # Make start script executable
 RUN chmod +x /app/start.sh
